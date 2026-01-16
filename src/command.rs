@@ -82,7 +82,7 @@ pub fn parse_config(matches: &clap::ArgMatches) -> Arc<Config> {
 /// * `clap::ArgMatches` - 解析后的命令行参数 / Parsed command line arguments
 pub fn new_command() -> clap::ArgMatches {
     Command::new("tcpkali2")
-        .version("0.1.0")
+        .version("0.1.1")
         .about("A load testing tool for WebSocket and TCP server")
         .arg(
             Arg::new("host:port")
