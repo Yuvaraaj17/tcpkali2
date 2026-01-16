@@ -13,11 +13,13 @@ license = "Apache-2.0"
 [dependencies]
 clap = "4.5.37"
 futures = "0.3.31"
-tokio = { version = "1.44.2", features = ["time", "rt", "rt-multi-thread", "macros", "sync"] }
-tokio-tungstenite = "0.26.2"
-tungstenite = "0.26.2"
+tokio = { version = "1.45.0", features = ["time", "rt", "rt-multi-thread", "macros", "sync", "signal"] }
+tokio-tungstenite = "0.28.0"
+tungstenite = "0.28.0"
 rand = "0.9.1"
 parking_lot = "0.12.3"
-hdrhistogram = "7.3.0"
+hdrhistogram = "7.5.4"
 crossbeam-queue = "0.3.12"
+crossbeam-deque = "0.8.5"
 bytes = "1.10.1"
+thiserror = "1.0.69"

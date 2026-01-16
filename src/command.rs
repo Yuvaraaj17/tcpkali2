@@ -4,24 +4,49 @@ use clap::{Arg, ArgAction, Command, value_parser};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[derive(Clone)]
+/// 负载测试配置
+/// 使用64字节对齐优化缓存行效率
+#[repr(align(64))]
+#[derive(Clone, Debug)]
 pub struct Config {
+    /// 测试持续时间
     pub duration: Duration,
+    /// 热身持续时间
     pub warmup_duration: Duration,
+    /// 消息大小（字节）
     pub message_size: usize,
+    /// 是否静默模式
     pub quiet: bool,
+    /// 是否启用 Nagle 算法
     pub nagle: bool,
+    /// 是否启用管道模式
     pub pipeline: bool,
+    /// 连接数
     pub connections: u64,
+    /// 连接速率（连接数/秒）
     pub connect_rate: u64,
+    /// 连接超时时间
     pub connect_timeout: Duration,
+    /// 通道生命周期
     pub channel_lifetime: Option<Duration>,
+    /// 第一条消息
     pub first_message: Option<Bytes>,
+    /// 测试消息
     pub message: Option<Bytes>,
+    /// 消息发送速率（消息数/秒）
     pub message_rate: Option<u64>,
+    /// 是否使用 WebSocket
     pub use_websocket: bool,
 }
 
+/// 解析命令行参数并创建配置
+/// Parse command line arguments and create configuration
+///
+/// # Arguments
+/// * `matches` - 命令行参数匹配结果 / Command line argument matches
+///
+/// # Returns
+/// * `Arc<Config>` - 共享的配置对象 / Shared configuration object
 pub fn parse_config(matches: &clap::ArgMatches) -> Arc<Config> {
     let unescape = matches.get_flag("unescape-message-args");
 
@@ -50,6 +75,11 @@ pub fn parse_config(matches: &clap::ArgMatches) -> Arc<Config> {
     Arc::new(config)
 }
 
+/// 创建命令行参数解析器
+/// Create command line argument parser
+///
+/// # Returns
+/// * `clap::ArgMatches` - 解析后的命令行参数 / Parsed command line arguments
 pub fn new_command() -> clap::ArgMatches {
     Command::new("tcpkali2")
         .version("0.1.0")
