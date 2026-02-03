@@ -97,7 +97,7 @@ pub fn parse_config(matches: &clap::ArgMatches) -> Result<Arc<Config>, TcpKaliEr
 /// * `clap::ArgMatches` - Parsed command line arguments
 pub fn new_command() -> clap::ArgMatches {
     Command::new("tcpkali2")
-        .version("0.1.1")
+        .version(env!("CARGO_PKG_VERSION") )
         .about("A load testing tool for WebSocket and TCP server")
         .arg(
             Arg::new("host:port")
