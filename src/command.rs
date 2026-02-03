@@ -1,60 +1,60 @@
+use crate::error::TcpKaliError;
 use crate::utils::{generate_payload, get_file_arg, get_message_arg, parse_duration, parse_rate};
 use bytes::Bytes;
 use clap::{Arg, ArgAction, Command, value_parser};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// 负载测试配置
-/// 使用64字节对齐优化缓存行效率
+/// Load test configuration
+/// Uses 64-byte alignment to optimize cache line efficiency
 #[repr(align(64))]
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// 测试持续时间
+    /// Test duration
     pub duration: Duration,
-    /// 热身持续时间
+    /// Warmup duration
     pub warmup_duration: Duration,
-    /// 消息大小（字节）
+    /// Message size (bytes)
     pub message_size: usize,
-    /// 是否静默模式
+    /// Whether quiet mode is enabled
     pub quiet: bool,
-    /// 是否启用 Nagle 算法
+    /// Whether Nagle algorithm is enabled
     pub nagle: bool,
-    /// 是否启用管道模式
+    /// Whether pipeline mode is enabled
     pub pipeline: bool,
-    /// 连接数
+    /// Number of connections
     pub connections: u64,
-    /// 连接速率（连接数/秒）
+    /// Connection rate (connections per second)
     pub connect_rate: u64,
-    /// 连接超时时间
+    /// Connection timeout
     pub connect_timeout: Duration,
-    /// 通道生命周期
+    /// Channel lifetime
     pub channel_lifetime: Option<Duration>,
-    /// 第一条消息
+    /// First message
     pub first_message: Option<Bytes>,
-    /// 测试消息
+    /// Test message
     pub message: Option<Bytes>,
-    /// 消息发送速率（消息数/秒）
+    /// Message sending rate (messages per second)
     pub message_rate: Option<u64>,
-    /// 是否使用 WebSocket
+    /// Whether WebSocket is used
     pub use_websocket: bool,
 }
 
-/// 解析命令行参数并创建配置
 /// Parse command line arguments and create configuration
 ///
 /// # Arguments
-/// * `matches` - 命令行参数匹配结果 / Command line argument matches
+/// * `matches` - Command line argument matches
 ///
 /// # Returns
-/// * `Arc<Config>` - 共享的配置对象 / Shared configuration object
-pub fn parse_config(matches: &clap::ArgMatches) -> Arc<Config> {
+/// * `Arc<Config>` - Shared configuration object
+pub fn parse_config(matches: &clap::ArgMatches) -> Result<Arc<Config>, TcpKaliError> {
     let unescape = matches.get_flag("unescape-message-args");
 
     let message_size = *matches.get_one::<usize>("message-size").unwrap();
 
     let config = Config {
         duration: *matches.get_one::<Duration>("duration").unwrap(),
-        warmup_duration: Duration::from_secs(5),
+        warmup_duration: *matches.get_one::<Duration>("warmup").unwrap(),
         quiet: matches.get_flag("quiet"),
         nagle: matches.get_flag("nagle"),
         pipeline: matches.get_flag("pipeline"),
@@ -72,14 +72,29 @@ pub fn parse_config(matches: &clap::ArgMatches) -> Arc<Config> {
         use_websocket: matches.get_flag("websocket"),
     };
 
-    Arc::new(config)
+    // Parameter validation
+    if config.connections == 0 {
+        return Err(TcpKaliError::Config("connections must be greater than 0".into()));
+    }
+    if config.connect_timeout.as_secs_f64() == 0.0 {
+        return Err(TcpKaliError::Config("connect-timeout must be greater than 0".into()));
+    }
+    if config.duration.as_secs_f64() == 0.0 {
+        return Err(TcpKaliError::Config("duration must be greater than 0".into()));
+    }
+    if let Some(lifetime) = config.channel_lifetime {
+        if lifetime.as_secs_f64() == 0.0 {
+            return Err(TcpKaliError::Config("channel-lifetime must be greater than 0 if specified".into()));
+        }
+    }
+
+    Ok(Arc::new(config))
 }
 
-/// 创建命令行参数解析器
 /// Create command line argument parser
 ///
 /// # Returns
-/// * `clap::ArgMatches` - 解析后的命令行参数 / Parsed command line arguments
+/// * `clap::ArgMatches` - Parsed command line arguments
 pub fn new_command() -> clap::ArgMatches {
     Command::new("tcpkali2")
         .version("0.1.1")
@@ -159,6 +174,14 @@ pub fn new_command() -> clap::ArgMatches {
                 .default_value("15s")
                 .value_parser(parse_duration)
                 .help("Load test for the specified amount of time"),
+        )
+        .arg(
+            Arg::new("warmup")
+                .long("warmup")
+                .value_name("T")
+                .default_value("5s")
+                .value_parser(parse_duration)
+                .help("Warmup duration before benchmark (0 to skip)"),
         )
         .arg(
             Arg::new("unescape-message-args")

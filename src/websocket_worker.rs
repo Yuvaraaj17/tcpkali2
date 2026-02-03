@@ -13,8 +13,8 @@ use tokio::time;
 use tokio_tungstenite::connect_async_with_config;
 use tungstenite::Message;
 
-/// 优化的错误处理宏
-/// 减少重复的 stats.is_shutting_down() && !config.quiet 检查
+/// Optimized error handling macro
+/// Reduces repeated stats.is_shutting_down() && !config.quiet checks
 macro_rules! log_error {
     ($stats:expr, $config:expr, $($arg:tt)*) => {
         if !$stats.is_shutting_down() && !$config.quiet {
@@ -23,17 +23,16 @@ macro_rules! log_error {
     };
 }
 
-/// WebSocket 工作线程主函数
 /// WebSocket worker main function
 ///
 /// # Arguments
-/// * `target` - 目标服务器地址 / Target server address
-/// * `config` - 配置对象 / Configuration object
-/// * `stats` - 统计对象 / Statistics object
-/// * `shutdown` - 关闭信号接收器 / Shutdown signal receiver
+/// * `target` - Target server address
+/// * `config` - Configuration object
+/// * `stats` - Statistics object
+/// * `shutdown` - Shutdown signal receiver
 ///
 /// # Returns
-/// * `Result<(), TcpKaliError>` - 执行结果 / Execution result
+/// * `Result<(), TcpKaliError>` - Execution result
 pub async fn websocket_worker(
     target: &str,
     config: Arc<Config>,
@@ -47,6 +46,18 @@ pub async fn websocket_worker(
     }
 }
 
+/// WebSocket ping-pong mode worker
+///
+/// Implements request-response pattern where each message expects a response.
+///
+/// # Arguments
+/// * `target` - Target server address
+/// * `config` - Configuration object
+/// * `stats` - Statistics object
+/// * `shutdown` - Shutdown signal receiver
+///
+/// # Returns
+/// * `Result<(), TcpKaliError>` - Execution result
 pub async fn websocket_worker_pingpong(
     target: &str,
     config: Arc<Config>,
@@ -121,104 +132,132 @@ pub async fn websocket_worker_pingpong(
 
     // Prepare payload for main benchmark
     let message = config.message.as_ref().expect("Message must be provided");
-    // 预创建Message对象并使用Arc共享，避免循环中重复创建
+    // Pre-create Message object and share with Arc to avoid repeated creation in loop
     let shared_message = std::sync::Arc::new(Message::Binary(message.clone()));
 
     // Writer task
     let start_time = Instant::now();
-    // 预计算结束时间，避免循环中重复计算
-    let end_time = config.channel_lifetime.map(|lifetime| start_time + lifetime);
+    // Pre-calculate end time to avoid repeated calculation in loop
+    // channel-lifetime starts after warmup ends
+    let end_time = config.channel_lifetime.map(|lifetime| start_time + config.warmup_duration + lifetime);
     let mut counter = 0;
 
-    loop {
-        if let Some(end) = end_time {
-            if Instant::now() >= end {
-                break;
+    // If message rate is 0 or message size is 0, only wait without sending messages
+    if config.message_rate == Some(0) || message.len() == 0 {
+        // Wait loop: only check connection lifetime and shutdown signal
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
+                }
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Brief sleep to avoid busy waiting
+                    continue;
+                }
+                _ = shutdown.recv() => break,
             }
         }
+    } else {
+        // Original message sending loop
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
+                }
+            }
 
-        tokio::select! {
-                _ = async {
-                    if stats.is_shutting_down() {
-                        return;
-                    }
-                    // 基于时间的yield：每10ms yield一次
-                    #[allow(unused_assignments)]
-                    let mut last_yield_time = Instant::now();
-                    const YIELD_INTERVAL: Duration = Duration::from_millis(10);
-
-                    // Record send time before actual write
-                    let send_time = Instant::now();
-
-                    // Perform write operation - 使用Arc克隆Message对象
-                    if let Err(e) = write.send((*shared_message).clone()).await {
-                        if !stats.is_shutting_down() && !config.quiet {
-                            eprintln!("WebSocket send error: {}", e);
+            tokio::select! {
+                    _ = async {
+                        if stats.is_shutting_down() {
+                            return;
                         }
-                        stats.record_connection_error();
-                        return;
-                    }
+                        // Time-based yield: yield every 10ms
+                        #[allow(unused_assignments)]
+                        let mut last_yield_time = Instant::now();
+                        const YIELD_INTERVAL: Duration = Duration::from_millis(10);
 
-                    counter += 1;
+                        // Record send time before actual write
+                        let send_time = Instant::now();
 
-                    if let Some(msg) = read.next().await {
-                        match msg {
-                            Ok(Message::Binary(data)) => {
-                                // 缓存elapsed结果，避免重复计算
-                                let elapsed = send_time.elapsed();
-                                let latency = elapsed.as_micros() as u64;
-                                stats.record_latency(latency, counter);
-                                stats.record_request(message.len(), data.len());
-                                
-                                // 优化消息速率控制：使用缓存的elapsed结果
-                                if let Some(rate) = config.message_rate {
-                                    // 预计算目标间隔（纳秒精度）
+                        // Perform write operation - clone Message object using Arc
+                        if let Err(e) = write.send((*shared_message).clone()).await {
+                            if !stats.is_shutting_down() && !config.quiet {
+                                eprintln!("WebSocket send error: {}", e);
+                            }
+                            stats.record_connection_error();
+                            return;
+                        }
+
+                        counter += 1;
+
+                        if let Some(msg) = read.next().await {
+                            match msg {
+                                Ok(Message::Binary(data)) => {
+                                    // Cache elapsed result to avoid repeated calculation
+                                    let elapsed = send_time.elapsed();
+                                    let latency = elapsed.as_micros() as u64;
+                                    stats.record_latency(latency, counter);
+                                    stats.record_request(message.len(), data.len());
+
+                                    // Optimize message rate control: use cached elapsed result
+                                    if let Some(rate) = config.message_rate {
+                                        if rate > 0 {
+                                            // Pre-calculate target interval (nanosecond precision)
+                                            const NANOS_PER_SEC: u64 = 1_000_000_000;
+                                            let target_interval_ns = NANOS_PER_SEC / rate;
+                                            let elapsed_ns = elapsed.as_nanos() as u64;
+
+                                            if elapsed_ns < target_interval_ns {
+                                                let sleep_ns = target_interval_ns - elapsed_ns;
+                                                if sleep_ns > 1_000_000 { // Only sleep when exceeding 1ms
+                                                    time::sleep(Duration::from_nanos(sleep_ns)).await;
+                                                }
+                                            }
+                                        }
+                                        // If rate == 0, no rate control
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    if !stats.is_shutting_down() && !config.quiet {
+                                        eprintln!("WebSocket receive error: {}", e);
+                                    }
+                                    stats.record_connection_error();
+                                    return;
+                                }
+                            }
+                        } else {
+                            // If no response received, still need to check message rate control
+                            if let Some(rate) = config.message_rate {
+                                if rate > 0 {
+                                    let elapsed = send_time.elapsed();
                                     const NANOS_PER_SEC: u64 = 1_000_000_000;
                                     let target_interval_ns = NANOS_PER_SEC / rate;
                                     let elapsed_ns = elapsed.as_nanos() as u64;
-                                    
+
                                     if elapsed_ns < target_interval_ns {
                                         let sleep_ns = target_interval_ns - elapsed_ns;
-                                        if sleep_ns > 1_000_000 { // 只sleep超过1ms的情况
+                                        if sleep_ns > 1_000_000 {
                                             time::sleep(Duration::from_nanos(sleep_ns)).await;
                                         }
                                     }
                                 }
-                            }
-                            Ok(_) => {}
-                            Err(e) => {
-                                if !stats.is_shutting_down() && !config.quiet {
-                                    eprintln!("WebSocket receive error: {}", e);
-                                }
-                                stats.record_connection_error();
-                                return;
+                                // If rate == 0, no rate control
                             }
                         }
-                    } else {
-                        // 如果没有收到响应，仍然需要检查消息速率控制
-                        if let Some(rate) = config.message_rate {
-                            let elapsed = send_time.elapsed();
-                            const NANOS_PER_SEC: u64 = 1_000_000_000;
-                            let target_interval_ns = NANOS_PER_SEC / rate;
-                            let elapsed_ns = elapsed.as_nanos() as u64;
-                            
-                            if elapsed_ns < target_interval_ns {
-                                let sleep_ns = target_interval_ns - elapsed_ns;
-                                if sleep_ns > 1_000_000 {
-                                    time::sleep(Duration::from_nanos(sleep_ns)).await;
-                                }
-                            }
+
+                        // Time-based yield: check every 10ms if yield is needed
+                        if last_yield_time.elapsed() >= YIELD_INTERVAL {
+                            tokio::task::yield_now().await;
+                            last_yield_time = Instant::now();
                         }
-                    }
 
-                    // 基于时间的yield：每10ms检查一次是否需要yield
-                    if last_yield_time.elapsed() >= YIELD_INTERVAL {
-                        tokio::task::yield_now().await;
-                        last_yield_time = Instant::now();
-                    }
-
-            } => {},
-            _ = shutdown.recv() => break,
+                } => {},
+                _ = shutdown.recv() => break,
+            }
         }
     }
     // Clean up reader task
@@ -228,6 +267,18 @@ pub async fn websocket_worker_pingpong(
     Ok(())
 }
 
+/// WebSocket pipeline mode worker
+///
+/// Implements pipeline pattern where multiple messages can be sent without waiting for responses.
+///
+/// # Arguments
+/// * `target` - Target server address
+/// * `config` - Configuration object
+/// * `stats` - Statistics object
+/// * `shutdown` - Shutdown signal receiver
+///
+/// # Returns
+/// * `Result<(), TcpKaliError>` - Execution result
 pub async fn websocket_worker_pipeline(
     target: &str,
     config: Arc<Config>,
@@ -264,7 +315,7 @@ pub async fn websocket_worker_pipeline(
     };
 
     let (mut write, mut read) = ws_stream.split();
-    // 使用可跨线程使用的Injector队列实现pipeline模式
+    // Use cross-thread Injector queue to implement pipeline mode
     let sent_times = Arc::new(Injector::<Instant>::new());
 
     // Handle first message if configured
@@ -333,68 +384,93 @@ pub async fn websocket_worker_pipeline(
 
     // Prepare payload for main benchmark
     let message = config.message.as_ref().expect("Message must be provided");
-    // 预创建Message对象并使用Arc共享，避免循环中重复创建
+    // Pre-create Message object and share with Arc to avoid repeated creation in loop
     let shared_message = std::sync::Arc::new(Message::Binary(message.clone()));
 
     // Writer task
     let start_time = Instant::now();
-    // 预计算结束时间，避免循环中重复计算
-    let end_time = config.channel_lifetime.map(|lifetime| start_time + lifetime);
+    // Pre-calculate end time to avoid repeated calculation in loop
+    // channel-lifetime starts after warmup ends
+    let end_time = config.channel_lifetime.map(|lifetime| start_time + config.warmup_duration + lifetime);
     let mut counter = 0;
 
-    loop {
-        if let Some(end) = end_time {
-            if Instant::now() >= end {
-                break;
+    // If message rate is 0 or message size is 0, only wait without sending messages
+    if config.message_rate == Some(0) || message.len() == 0 {
+        // Wait loop: only check connection lifetime and shutdown signal
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
+                }
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Brief sleep to avoid busy waiting
+                    continue;
+                }
+                _ = shutdown.recv() => break,
             }
         }
-
-        tokio::select! {
-            _ = async {
-                if stats.is_shutting_down() {
-                    return;
+    } else {
+        // Original message sending loop
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
                 }
-                // 基于时间的yield：每10ms yield一次
-                #[allow(unused_assignments)]
-                let mut last_yield_time = Instant::now();
-                const YIELD_INTERVAL: Duration = Duration::from_millis(10);
+            }
 
-                // Record send time before actual write
-                let send_time = Instant::now();
-                sent_times.push(send_time);
-
-                // Perform write operation - 使用Arc克隆Message对象
-                if let Err(e) = write.send((*shared_message).clone()).await {
-                    if !stats.is_shutting_down() && !config.quiet {
-                        eprintln!("WebSocket send error: {}", e);
+            tokio::select! {
+                _ = async {
+                    if stats.is_shutting_down() {
+                        return;
                     }
-                    stats.record_connection_error();
-                    return;
-                }
+                    // Time-based yield: yield every 10ms
+                    #[allow(unused_assignments)]
+                    let mut last_yield_time = Instant::now();
+                    const YIELD_INTERVAL: Duration = Duration::from_millis(10);
 
-                counter += 1;
-                // 基于时间的yield：每10ms检查一次是否需要yield
-                if last_yield_time.elapsed() >= YIELD_INTERVAL {
-                    tokio::task::yield_now().await;
-                    last_yield_time = Instant::now();
-                }
+                    // Record send time before actual write
+                    let send_time = Instant::now();
+                    sent_times.push(send_time);
 
-                // 优化消息速率控制：预计算目标间隔，减少重复计算
-                if let Some(rate) = config.message_rate {
-                    // 预计算目标间隔（纳秒精度）
-                    const NANOS_PER_SEC: u64 = 1_000_000_000;
-                    let target_interval_ns = NANOS_PER_SEC / rate;
-                    let elapsed_ns = send_time.elapsed().as_nanos() as u64;
-                    
-                    if elapsed_ns < target_interval_ns {
-                        let sleep_ns = target_interval_ns - elapsed_ns;
-                        if sleep_ns > 1_000_000 { // 只sleep超过1ms的情况
-                            time::sleep(Duration::from_nanos(sleep_ns)).await;
+                    // Perform write operation - clone Message object using Arc
+                    if let Err(e) = write.send((*shared_message).clone()).await {
+                        if !stats.is_shutting_down() && !config.quiet {
+                            eprintln!("WebSocket send error: {}", e);
                         }
+                        stats.record_connection_error();
+                        return;
                     }
-                }
-            } => {},
-            _ = shutdown.recv() => break,
+
+                    counter += 1;
+                    // Time-based yield: check every 10ms if yield is needed
+                    if last_yield_time.elapsed() >= YIELD_INTERVAL {
+                        tokio::task::yield_now().await;
+                        last_yield_time = Instant::now();
+                    }
+
+                    // Optimize message rate control: pre-calculate target interval, reduce repeated calculation
+                    if let Some(rate) = config.message_rate {
+                        if rate > 0 {
+                            // Pre-calculate target interval (nanosecond precision)
+                            const NANOS_PER_SEC: u64 = 1_000_000_000;
+                            let target_interval_ns = NANOS_PER_SEC / rate;
+                            let elapsed_ns = send_time.elapsed().as_nanos() as u64;
+
+                            if elapsed_ns < target_interval_ns {
+                                let sleep_ns = target_interval_ns - elapsed_ns;
+                                if sleep_ns > 1_000_000 { // Only sleep when exceeding 1ms
+                                    time::sleep(Duration::from_nanos(sleep_ns)).await;
+                                }
+                            }
+                        }
+                        // If rate == 0, no rate control
+                    }
+                } => {},
+                _ = shutdown.recv() => break,
+            }
         }
     }
 

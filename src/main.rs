@@ -10,14 +10,16 @@ use crate::command::new_command;
 use crate::error::TcpKaliError;
 use crate::runner::async_main;
 
-/// TCPKali2 主函数
 /// TCPKali2 main function
 ///
 /// # Returns
-/// * `Result<(), TcpKaliError>` - 执行结果 / Execution result
+/// * `Result<(), TcpKaliError>` - Execution result
 fn main() -> Result<(), TcpKaliError> {
     let matches = new_command();
     let workers = *matches.get_one::<usize>("workers").unwrap();
+    if workers == 0 {
+        return Err(TcpKaliError::Config("workers must be greater than 0".into()));
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()

@@ -12,8 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time;
 
-/// 优化的错误处理宏
-/// 减少重复的 stats.is_shutting_down() && !config.quiet 检查
+/// Optimized error handling macro
+/// Reduces repeated stats.is_shutting_down() && !config.quiet checks
 macro_rules! log_error {
     ($stats:expr, $config:expr, $($arg:tt)*) => {
         if !$stats.is_shutting_down() && !$config.quiet {
@@ -24,17 +24,16 @@ macro_rules! log_error {
 
 
 
-/// TCP 工作线程主函数
 /// TCP worker main function
 ///
 /// # Arguments
-/// * `target` - 目标服务器地址 / Target server address
-/// * `config` - 配置对象 / Configuration object
-/// * `stats` - 统计对象 / Statistics object
-/// * `shutdown` - 关闭信号接收器 / Shutdown signal receiver
+/// * `target` - Target server address
+/// * `config` - Configuration object
+/// * `stats` - Statistics object
+/// * `shutdown` - Shutdown signal receiver
 ///
 /// # Returns
-/// * `Result<(), TcpKaliError>` - 执行结果 / Execution result
+/// * `Result<(), TcpKaliError>` - Execution result
 pub async fn tcp_worker(
     target: &str,
     config: Arc<Config>,
@@ -48,17 +47,16 @@ pub async fn tcp_worker(
     }
 }
 
-/// TCP 乒乓模式工作线程
 /// TCP ping-pong mode worker
 ///
 /// # Arguments
-/// * `target` - 目标服务器地址 / Target server address
-/// * `config` - 配置对象 / Configuration object
-/// * `stats` - 统计对象 / Statistics object
-/// * `shutdown` - 关闭信号接收器 / Shutdown signal receiver
+/// * `target` - Target server address
+/// * `config` - Configuration object
+/// * `stats` - Statistics object
+/// * `shutdown` - Shutdown signal receiver
 ///
 /// # Returns
-/// * `Result<(), TcpKaliError>` - 执行结果 / Execution result
+/// * `Result<(), TcpKaliError>` - Execution result
 pub async fn tcp_worker_pingpong(
     target: &str,
     config: Arc<Config>,
@@ -82,7 +80,7 @@ pub async fn tcp_worker_pingpong(
         }
     };
 
-    // 是否启用Nagle algorithm
+    // Whether Nagle algorithm is enabled
     if config.nagle {
         stream.set_nodelay(false)?;
     }
@@ -92,9 +90,9 @@ pub async fn tcp_worker_pingpong(
     // Handle first message if configured
     if let Some(first_msg) = &config.first_message {
         let start = Instant::now();
-        // 使用write而不是write_all，减少系统调用
+        // Use write instead of write_all to reduce system calls
         match writer.write(first_msg).await {
-            Ok(n) if n == first_msg.len() => { /* 成功写入完整消息 */ }
+            Ok(n) if n == first_msg.len() => { /* Successfully wrote complete message */ }
             Ok(_) => {
                 if !stats.is_shutting_down() && !config.quiet {
                     eprintln!("Partial write of first message");
@@ -136,97 +134,125 @@ pub async fn tcp_worker_pingpong(
 
     // Writer task
     let start_time = Instant::now();
-    // 预计算结束时间，避免循环中重复计算
-    let end_time = config.channel_lifetime.map(|lifetime| start_time + lifetime);
+    // Pre-calculate end time to avoid repeated calculation in loop
+    // channel-lifetime starts after warmup ends
+    let end_time = config.channel_lifetime.map(|lifetime| start_time + config.warmup_duration + lifetime);
     let mut counter = 0;
-    // 基于时间的yield：每10ms yield一次，避免频繁的取模运算
+    // Time-based yield: yield every 10ms to avoid frequent modulo operations
     #[allow(unused_assignments)]
     let mut last_yield_time = Instant::now();
     const YIELD_INTERVAL: Duration = Duration::from_millis(10);
 
-    // 预分配缓冲区并在循环中重用，避免重复分配
+    // Pre-allocate buffer and reuse in loop to avoid repeated allocation
     let mut buf = vec![0u8; message_size];
     let expected_len = message_size;
-    loop {
-        if let Some(end) = end_time {
-            if Instant::now() >= end {
-                break;
+
+    // If message rate is 0 or message size is 0, only wait without sending messages
+    if config.message_rate == Some(0) || message.len() == 0 {
+        // Wait loop: only check connection lifetime and shutdown signal
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
+                }
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Brief sleep to avoid busy waiting
+                    continue;
+                }
+                _ = shutdown.recv() => break,
             }
         }
-
-        tokio::select! {
-            _ = async {
-                if stats.is_shutting_down() {
-                    return;
+    } else {
+        // Original message sending loop
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
                 }
+            }
 
-                // Record send time before actual write
-                let send_time = Instant::now();
-
-                // Perform write operation immediately
-                // 使用write而不是write_all，减少系统调用开销
-                match writer.write(message).await {
-                    Ok(n) if n == message.len() => {
-                        // 成功写入完整消息
-                    }
-                    Ok(_) => {
-                        if !stats.is_shutting_down() && !config.quiet {
-                            eprintln!("Partial write");
-                        }
-                        stats.record_connection_error();
+            tokio::select! {
+                _ = async {
+                    if stats.is_shutting_down() {
                         return;
                     }
+
+                    // Record send time before actual write
+                    let send_time = Instant::now();
+
+                    // Perform write operation immediately
+                    // Use write instead of write_all to reduce system calls overhead
+                    match writer.write(message).await {
+                        Ok(n) if n == message.len() => {
+                            // Successfully wrote complete message
+                        }
+                        Ok(_) => {
+                            if !stats.is_shutting_down() && !config.quiet {
+                                eprintln!("Partial write");
+                            }
+                            stats.record_connection_error();
+                            return;
+                        }
+                        Err(e) => {
+                            if !stats.is_shutting_down() && !config.quiet {
+                                eprintln!("Write error: {}", e);
+                            }
+                            stats.record_connection_error();
+                            return;
+                        }
+                    }
+
+                    counter += 1;
+
+                    match reader.read_exact(&mut buf[..expected_len]).await {
+                    Ok(n) if n == expected_len => {
+                        // Cache elapsed result to avoid repeated calculation
+                        let elapsed = send_time.elapsed();
+                        let latency = elapsed.as_micros() as u64;
+                        stats.record_latency(latency, counter);
+                        stats.record_request(expected_len, expected_len);
+
+                        // Optimize message rate control: use cached elapsed result
+                        if let Some(rate) = config.message_rate {
+                            if rate > 0 {
+                                // Pre-calculate target interval (nanosecond precision)
+                                const NANOS_PER_SEC: u64 = 1_000_000_000;
+                                let target_interval_ns = NANOS_PER_SEC / rate;
+                                let elapsed_ns = elapsed.as_nanos() as u64;
+
+                                if elapsed_ns < target_interval_ns {
+                                    let sleep_ns = target_interval_ns - elapsed_ns;
+                                    if sleep_ns > 1_000_000 { // Only sleep when exceeding 1ms
+                                        time::sleep(Duration::from_nanos(sleep_ns)).await;
+                                    }
+                                }
+                            }
+                            // If rate == 0, no rate control and no message sending?
+                            // Current loop continues to send messages, but user may expect no messages.
+                            // For backward compatibility, we still send messages (may be empty).
+                        }
+                    }
+                    Ok(_) => return, // Unexpected EOF
                     Err(e) => {
                         if !stats.is_shutting_down() && !config.quiet {
-                            eprintln!("Write error: {}", e);
+                            eprintln!("Read error: {}", e);
                         }
                         stats.record_connection_error();
                         return;
                     }
                 }
 
-                counter += 1;
-
-                match reader.read_exact(&mut buf[..expected_len]).await {
-                Ok(n) if n == expected_len => {
-                    // 缓存elapsed结果，避免重复计算
-                    let elapsed = send_time.elapsed();
-                    let latency = elapsed.as_micros() as u64;
-                    stats.record_latency(latency, counter);
-                    stats.record_request(expected_len, expected_len);
-                    
-                    // 优化消息速率控制：使用缓存的elapsed结果
-                    if let Some(rate) = config.message_rate {
-                        // 预计算目标间隔（纳秒精度）
-                        const NANOS_PER_SEC: u64 = 1_000_000_000;
-                        let target_interval_ns = NANOS_PER_SEC / rate;
-                        let elapsed_ns = elapsed.as_nanos() as u64;
-                        
-                        if elapsed_ns < target_interval_ns {
-                            let sleep_ns = target_interval_ns - elapsed_ns;
-                            if sleep_ns > 1_000_000 { // 只sleep超过1ms的情况
-                                time::sleep(Duration::from_nanos(sleep_ns)).await;
-                            }
-                        }
-                    }
+                // Time-based yield: check every 10ms if yield is needed
+                if last_yield_time.elapsed() >= YIELD_INTERVAL {
+                    tokio::task::yield_now().await;
+                    last_yield_time = Instant::now();
                 }
-                Ok(_) => return, // Unexpected EOF
-                Err(e) => {
-                    if !stats.is_shutting_down() && !config.quiet {
-                        eprintln!("Read error: {}", e);
-                    }
-                    stats.record_connection_error();
-                    return;
-                }
+                } => {},
+                _ = shutdown.recv() => break,
             }
-
-            // 基于时间的yield：每10ms检查一次是否需要yield
-            if last_yield_time.elapsed() >= YIELD_INTERVAL {
-                tokio::task::yield_now().await;
-                last_yield_time = Instant::now();
-            }
-            } => {},
-            _ = shutdown.recv() => break,
         }
     }
 
@@ -236,6 +262,18 @@ pub async fn tcp_worker_pingpong(
     Ok(())
 }
 
+/// TCP pipeline mode worker
+///
+/// Implements pipeline pattern where multiple messages can be sent without waiting for responses.
+///
+/// # Arguments
+/// * `target` - Target server address
+/// * `config` - Configuration object
+/// * `stats` - Statistics object
+/// * `shutdown` - Shutdown signal receiver
+///
+/// # Returns
+/// * `Result<(), TcpKaliError>` - Execution result
 pub async fn tcp_worker_pipeline(
     target: &str,
     config: Arc<Config>,
@@ -259,21 +297,21 @@ pub async fn tcp_worker_pipeline(
         }
     };
 
-    // 是否启用Nagle algorithm
+    // Whether Nagle algorithm is enabled
     if config.nagle {
         stream.set_nodelay(false)?;
     }
 
     let (mut reader, mut writer) = stream.into_split();
-    // 使用可跨线程使用的Injector队列实现pipeline模式
+    // Use cross-thread Injector queue to implement pipeline mode
     let sent_times = Arc::new(Injector::<Instant>::new());
 
     // Handle first message if configured
     if let Some(first_msg) = &config.first_message {
         let start = Instant::now();
-        // 使用write而不是write_all，减少系统调用
+        // Use write instead of write_all to reduce system calls
         match writer.write(first_msg).await {
-            Ok(n) if n == first_msg.len() => { /* 成功写入完整消息 */ }
+            Ok(n) if n == first_msg.len() => { /* Successfully wrote complete message */ }
             Ok(_) => {
                 if !stats.is_shutting_down() && !config.quiet {
                     eprintln!("Partial write of first message");
@@ -318,7 +356,7 @@ pub async fn tcp_worker_pipeline(
     let reader_config = config.clone();
     let reader_sent_times = sent_times.clone();
     let reader_handle = tokio::spawn(async move {
-        // 预分配缓冲区并在循环中重用，避免重复分配
+        // Pre-allocate buffer and reuse in loop to avoid repeated allocation
         let mut buf = vec![0u8; message_size];
         let expected_len = message_size;
         let mut counter: usize = 0;
@@ -329,7 +367,7 @@ pub async fn tcp_worker_pipeline(
                     match result {
                         Ok(n) if n == expected_len => {
                             counter += 1;
-                            // 使用Injector的steal方法获取元素
+                            // Use Injector's steal method to get elements
                             if let crossbeam_deque::Steal::Success(sent_time) = reader_sent_times.steal() {
                                 let latency = sent_time.elapsed().as_micros() as u64;
                                 reader_stats.record_request(expected_len, expected_len);
@@ -356,69 +394,94 @@ pub async fn tcp_worker_pipeline(
 
     // Writer task
     let start_time = Instant::now();
-    // 预计算结束时间，避免循环中重复计算
-    let end_time = config.channel_lifetime.map(|lifetime| start_time + lifetime);
+    // Pre-calculate end time to avoid repeated calculation in loop
+    // channel-lifetime starts after warmup ends
+    let end_time = config.channel_lifetime.map(|lifetime| start_time + config.warmup_duration + lifetime);
     let mut counter = 0;
-    // 基于时间的yield：每10ms yield一次，避免频繁的取模运算
+    // Time-based yield: yield every 10ms to avoid frequent modulo operations
     #[allow(unused_assignments)]
     let mut last_yield_time = Instant::now();
     const YIELD_INTERVAL: Duration = Duration::from_millis(10);
 
-    loop {
-        if let Some(end) = end_time {
-            if Instant::now() >= end {
-                break;
+    // If message rate is 0 or message size is 0, only wait without sending messages
+    if config.message_rate == Some(0) || message.len() == 0 {
+        // Wait loop: only check connection lifetime and shutdown signal
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
+                }
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Brief sleep to avoid busy waiting
+                    continue;
+                }
+                _ = shutdown.recv() => break,
             }
         }
-
-        tokio::select! {
-            _ = async {
-                if stats.is_shutting_down() {
-                    return;
+    } else {
+        // Original message sending loop
+        loop {
+            if let Some(end) = end_time {
+                if Instant::now() >= end {
+                    break;
                 }
+            }
 
-                // Record send time before actual write
-                let send_time = Instant::now();
-                sent_times.push(send_time);
-
-                // Perform write operation immediately
-                // 使用write而不是write_all，减少系统调用开销
-                match writer.write(message).await {
-                    Ok(n) if n == message.len() => {
-                        // 成功写入完整消息
-                    }
-                    Ok(_) => {
-                        if !stats.is_shutting_down() && !config.quiet {
-                            eprintln!("Partial write");
-                        }
-                        stats.record_connection_error();
+            tokio::select! {
+                _ = async {
+                    if stats.is_shutting_down() {
                         return;
                     }
-                    Err(e) => {
-                        if !stats.is_shutting_down() && !config.quiet {
-                            eprintln!("Write error: {}", e);
+
+                    // Record send time before actual write
+                    let send_time = Instant::now();
+                    sent_times.push(send_time);
+
+                    // Perform write operation immediately
+                    // Use write instead of write_all to reduce system calls overhead
+                    match writer.write(message).await {
+                        Ok(n) if n == message.len() => {
+                            // Successfully wrote complete message
                         }
-                        stats.record_connection_error();
-                        return;
+                        Ok(_) => {
+                            if !stats.is_shutting_down() && !config.quiet {
+                                eprintln!("Partial write");
+                            }
+                            stats.record_connection_error();
+                            return;
+                        }
+                        Err(e) => {
+                            if !stats.is_shutting_down() && !config.quiet {
+                                eprintln!("Write error: {}", e);
+                            }
+                            stats.record_connection_error();
+                            return;
+                        }
                     }
-                }
 
-                counter += 1;
-                // 基于时间的yield：每10ms检查一次是否需要yield
-                if last_yield_time.elapsed() >= YIELD_INTERVAL {
-                    tokio::task::yield_now().await;
-                    last_yield_time = Instant::now();
-                }
-
-                if let Some(rate) = config.message_rate {
-                    let target_duration = Duration::from_secs_f64(1.0 / rate as f64);
-                    let elapsed = send_time.elapsed();
-                    if elapsed < target_duration {
-                        time::sleep(target_duration - elapsed).await;
+                    counter += 1;
+                    // Time-based yield: check every 10ms if yield is needed
+                    if last_yield_time.elapsed() >= YIELD_INTERVAL {
+                        tokio::task::yield_now().await;
+                        last_yield_time = Instant::now();
                     }
-                }
-            } => {},
-            _ = shutdown.recv() => break,
+
+                    if let Some(rate) = config.message_rate {
+                        if rate > 0 {
+                            let target_duration = Duration::from_secs_f64(1.0 / rate as f64);
+                            let elapsed = send_time.elapsed();
+                            if elapsed < target_duration {
+                                time::sleep(target_duration - elapsed).await;
+                            }
+                        }
+                        // If rate == 0, no rate control
+                    }
+                } => {},
+                _ = shutdown.recv() => break,
+            }
         }
     }
 

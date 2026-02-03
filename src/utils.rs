@@ -3,14 +3,13 @@ use rand::Rng;
 use rand::distr::Alphanumeric;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// 解析持续时间字符串
 /// Parse duration string
 ///
 /// # Arguments
-/// * `s` - 持续时间字符串（如 "10s", "100ms", "5m"）/ Duration string (e.g., "10s", "100ms", "5m")
+/// * `s` - Duration string (e.g., "10s", "100ms", "5m")
 ///
 /// # Returns
-/// * `Result<Duration, String>` - 解析结果 / Parse result
+/// * `Result<Duration, String>` - Parse result
 ///
 /// # Examples
 /// ```
@@ -26,7 +25,7 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
 
     let sl = s.to_lowercase();
 
-    // 先处理毫秒后缀 / Handle millisecond suffix first
+    // Handle millisecond suffix first
     if sl.ends_with("ms") {
         let num_str = sl.strip_suffix("ms").unwrap().trim();
         if num_str.is_empty() {
@@ -38,12 +37,12 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
         return Ok(Duration::from_millis(num));
     }
 
-    // 必须至少有一个数字和一个单位字符
+    // Must have at least one digit and one unit character
     if sl.len() < 2 {
         return Err("Duration string too short".to_string());
     }
 
-    // 单字符单位：s, m, h, d
+    // Single character units: s, m, h, d
     let (num_str, unit_str) = sl.split_at(sl.len() - 1);
     let num_str = num_str.trim();
     if num_str.is_empty() {
@@ -62,14 +61,13 @@ pub fn parse_duration(s: &str) -> Result<Duration, String> {
     }
 }
 
-/// 解析速率字符串
 /// Parse rate string
 ///
 /// # Arguments
-/// * `s` - 速率字符串（如 "1000", "10k"）/ Rate string (e.g., "1000", "10k")
+/// * `s` - Rate string (e.g., "1000", "10k")
 ///
 /// # Returns
-/// * `Result<u64, String>` - 解析结果 / Parse result
+/// * `Result<u64, String>` - Parse result
 ///
 /// # Examples
 /// ```
@@ -96,14 +94,13 @@ pub fn parse_rate(s: &str) -> Result<u64, String> {
         .map_err(|_| format!("Invalid rate number: '{}'", sl))
 }
 
-/// 转义字符串
 /// Unescape string
 ///
 /// # Arguments
-/// * `s` - 包含转义字符的字符串 / String containing escape sequences
+/// * `s` - String containing escape sequences
 ///
 /// # Returns
-/// * `String` - 转义后的字符串 / Unescaped string
+/// * `String` - Unescaped string
 ///
 /// # Examples
 /// ```
@@ -123,7 +120,7 @@ pub fn unescape_string(s: &str) -> String {
                 Some('\\') => result.push('\\'),
                 Some('0') => result.push('\0'),
                 Some('x') => {
-                    // Handle hex escape sequences like \x41 / 处理十六进制转义序列
+                    // Handle hex escape sequences like \x41
                     let hex_digits: String = chars.by_ref().take(2).collect();
                     if hex_digits.len() == 2 {
                         if let Ok(byte) = u8::from_str_radix(&hex_digits, 16) {
@@ -137,11 +134,11 @@ pub fn unescape_string(s: &str) -> String {
                     }
                 }
                 Some(c) => {
-                    // Unknown escape sequence, keep both characters / 未知转义序列，保留两个字符
+                    // Unknown escape sequence, keep both characters
                     result.push('\\');
                     result.push(c);
                 }
-                None => result.push('\\'), // Backslash at end of string / 字符串末尾的反斜杠
+                None => result.push('\\'), // Backslash at end of string
             }
         } else {
             result.push(c);
@@ -151,16 +148,15 @@ pub fn unescape_string(s: &str) -> String {
     result
 }
 
-/// 获取消息参数
 /// Get message argument
 ///
 /// # Arguments
-/// * `matches` - 命令行参数匹配结果 / Command line argument matches
-/// * `arg_name` - 参数名称 / Argument name
-/// * `unescape` - 是否转义 / Whether to unescape
+/// * `matches` - Command line argument matches
+/// * `arg_name` - Argument name
+/// * `unescape` - Whether to unescape
 ///
 /// # Returns
-/// * `Option<Bytes>` - 消息字节数据 / Message bytes data
+/// * `Option<Bytes>` - Message bytes data
 pub fn get_message_arg(
     matches: &clap::ArgMatches,
     arg_name: &str,
@@ -175,16 +171,15 @@ pub fn get_message_arg(
     })
 }
 
-/// 获取文件参数
 /// Get file argument
 ///
 /// # Arguments
-/// * `matches` - 命令行参数匹配结果 / Command line argument matches
-/// * `arg_name` - 参数名称 / Argument name
-/// * `unescape` - 是否转义 / Whether to unescape
+/// * `matches` - Command line argument matches
+/// * `arg_name` - Argument name
+/// * `unescape` - Whether to unescape
 ///
 /// # Returns
-/// * `Option<Bytes>` - 文件内容字节数据 / File content bytes data
+/// * `Option<Bytes>` - File content bytes data
 pub fn get_file_arg(matches: &clap::ArgMatches, arg_name: &str, unescape: bool) -> Option<Bytes> {
     matches.get_one::<String>(arg_name).and_then(|filename| {
         match std::fs::read_to_string(filename) {
@@ -203,14 +198,13 @@ pub fn get_file_arg(matches: &clap::ArgMatches, arg_name: &str, unescape: bool) 
     })
 }
 
-/// 生成随机负载数据
 /// Generate random payload data
 ///
 /// # Arguments
-/// * `size` - 负载大小（字节）/ Payload size in bytes
+/// * `size` - Payload size in bytes
 ///
 /// # Returns
-/// * `Option<Bytes>` - 随机负载字节数据 / Random payload bytes data
+/// * `Option<Bytes>` - Random payload bytes data
 pub fn generate_payload(size: usize) -> Option<Bytes> {
     Some(Bytes::from(
         rand::rng()
@@ -220,11 +214,10 @@ pub fn generate_payload(size: usize) -> Option<Bytes> {
     ))
 }
 
-/// 获取当前 Unix 时间戳（毫秒）
 /// Get current Unix timestamp in milliseconds
 ///
 /// # Returns
-/// * `u64` - Unix 时间戳（毫秒）/ Unix timestamp in milliseconds
+/// * `u64` - Unix timestamp in milliseconds
 pub fn unix_timestamp_millis() -> u64 {
     let now = SystemTime::now();
     now.duration_since(UNIX_EPOCH)

@@ -3,28 +3,25 @@ use hdrhistogram::Histogram;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-/// 本地统计缓存，用于批量更新以减少原子操作
 /// Local statistics cache for batch updates to reduce atomic operations
 #[derive(Default, Clone, Debug)]
 #[allow(dead_code)]
 pub struct LocalStatsCache {
-    /// 本地请求计数 / Local request count
+    /// Local request count
     pub requests: u64,
-    /// 本地发送字节数 / Local bytes sent
+    /// Local bytes sent
     pub bytes_sent: u64,
-    /// 本地接收字节数 / Local bytes received
+    /// Local bytes received
     pub bytes_received: u64,
 }
 
 #[allow(dead_code)]
 impl LocalStatsCache {
-    /// 创建新的本地缓存
     /// Create new local cache
     pub fn new() -> Self {
         Self::default()
     }
     
-    /// 记录请求到本地缓存
     /// Record request to local cache
     pub fn record_request(&mut self, bytes_sent: usize, bytes_received: usize) {
         self.requests += 1;
@@ -32,7 +29,6 @@ impl LocalStatsCache {
         self.bytes_received += bytes_received as u64;
     }
     
-    /// 将本地缓存提交到全局统计
     /// Commit local cache to global statistics
     pub fn commit_to(&self, stats: &Stats) {
         if self.requests > 0 {
@@ -42,7 +38,6 @@ impl LocalStatsCache {
         }
     }
     
-    /// 重置本地缓存
     /// Reset local cache
     pub fn reset(&mut self) {
         self.requests = 0;
@@ -51,42 +46,40 @@ impl LocalStatsCache {
     }
 }
 
-/// 性能统计数据结构
 /// Performance statistics data structure
-/// 使用64字节对齐优化缓存行效率，减少伪共享
+/// Uses 64-byte alignment to optimize cache line efficiency and reduce false sharing
 #[repr(align(64))]
 #[derive(Debug)]
 pub struct Stats {
-    /// 总连接数 / Total connections
+    /// Total connections
     pub total_connections: AtomicU64,
-    /// 成功连接数 / Successful connections
+    /// Successful connections
     pub success_connections: AtomicU64,
-    /// 总请求数 / Total requests
+    /// Total requests
     pub total_requests: AtomicU64,
-    /// 总发送字节数 / Total bytes sent
+    /// Total bytes sent
     pub total_bytes_sent: AtomicU64,
-    /// 总接收字节数 / Total bytes received
+    /// Total bytes received
     pub total_bytes_received: AtomicU64,
-    /// 延迟直方图 / Latency histogram
+    /// Latency histogram
     pub latency_histogram: parking_lot::Mutex<Histogram<u64>>,
-    /// 是否处于热身阶段 / Whether in warmup phase
+    /// Whether in warmup phase
     pub is_warmup: AtomicBool,
-    /// 是否正在关闭 / Whether shutting down
+    /// Whether shutting down
     pub is_shutting_down: AtomicBool,
-    /// 上次打印时间 / Last print time
+    /// Last print time
     pub last_print_time: AtomicU64,
-    /// 上次打印计数 / Last print count
+    /// Last print count
     pub last_print_count: AtomicU64,
-    /// 连接错误数 / Connection errors
+    /// Connection errors
     pub connection_errors: AtomicU64,
 }
 
 impl Stats {
-    /// 创建新的统计对象
     /// Create new statistics object
     ///
     /// # Returns
-    /// * `Self` - 新的统计对象 / New statistics object
+    /// * `Self` - New statistics object
     pub fn new() -> Self {
         let hist = Histogram::<u64>::new_with_bounds(1, 60_000_000, 3)
             .expect("Failed to create histogram");
@@ -106,15 +99,14 @@ impl Stats {
         }
     }
 
-    /// 记录延迟数据
     /// Record latency data
     ///
     /// # Arguments
-    /// * `latency_us` - 延迟时间（微秒）/ Latency in microseconds
-    /// * `sample_count` - 样本计数 / Sample count
+    /// * `latency_us` - Latency in microseconds
+    /// * `sample_count` - Sample count
     pub fn record_latency(&self, latency_us: u64, sample_count: usize) {
-        // 优化采样策略：使用位运算检查是否为2的幂次方的倍数，减少分支预测失败
-        // 同时增加采样间隔到256，减少锁竞争
+        // Optimize sampling strategy: use bit operations to check if it's a multiple of a power of two, reducing branch prediction failures
+        // Increase sampling interval to 256 to reduce lock contention
         if (sample_count & 0xFF) == 0 && !self.is_warmup() {
             let mut hist = self.latency_histogram.lock();
             hist.record(latency_us).unwrap_or_else(|e| {
@@ -125,12 +117,11 @@ impl Stats {
         }
     }
 
-    /// 记录请求数据
     /// Record request data
     ///
     /// # Arguments
-    /// * `bytes_sent` - 发送字节数 / Bytes sent
-    /// * `bytes_received` - 接收字节数 / Bytes received
+    /// * `bytes_sent` - Bytes sent
+    /// * `bytes_received` - Bytes received
     pub fn record_request(&self, bytes_sent: usize, bytes_received: usize) {
         if !self.is_warmup() {
             self.total_requests.fetch_add(1, Ordering::Relaxed);
@@ -141,11 +132,10 @@ impl Stats {
         }
     }
     
-    /// 批量记录请求数据（使用本地缓存）
     /// Batch record request data (using local cache)
     ///
     /// # Arguments
-    /// * `cache` - 本地统计缓存 / Local statistics cache
+    /// * `cache` - Local statistics cache
     #[allow(dead_code)]
     pub fn record_request_batch(&self, cache: &LocalStatsCache) {
         if !self.is_warmup() && cache.requests > 0 {
@@ -155,12 +145,16 @@ impl Stats {
         }
     }
 
-    /// 记录连接错误
     /// Record connection error
+    ///
+    /// Increments the connection error counter by one.
     pub fn record_connection_error(&self) {
         self.connection_errors.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// End warmup phase
+    ///
+    /// Resets statistics counters and clears latency histogram to start the main benchmark phase.
     pub fn end_warmup(&self) {
         self.total_requests.store(0, Ordering::Relaxed);
         self.total_bytes_sent.store(0, Ordering::Relaxed);
@@ -172,18 +166,35 @@ impl Stats {
         self.is_warmup.store(false, Ordering::Relaxed);
     }
 
+    /// Check if currently in warmup phase
+    ///
+    /// # Returns
+    /// * `bool` - True if in warmup phase, false otherwise
     pub fn is_warmup(&self) -> bool {
         self.is_warmup.load(Ordering::Relaxed)
     }
 
+    /// Set shutting down flag
+    ///
+    /// Marks the statistics instance as shutting down, which prevents further error logging.
     pub fn set_shutting_down(&self) {
         self.is_shutting_down.store(true, Ordering::Relaxed);
     }
 
+    /// Check if shutting down
+    ///
+    /// # Returns
+    /// * `bool` - True if shutting down, false otherwise
     pub fn is_shutting_down(&self) -> bool {
         self.is_shutting_down.load(Ordering::Relaxed)
     }
 
+    /// Get current queries per second (QPS)
+    ///
+    /// Calculates the QPS based on the request count since the last call.
+    ///
+    /// # Returns
+    /// * `f64` - Queries per second
     pub fn get_qps(&self) -> f64 {
         let now = unix_timestamp_millis();
         let current_count = self.total_requests.load(Ordering::Relaxed);
@@ -192,7 +203,7 @@ impl Stats {
 
         let elapsed_ms = now - last_time;
         
-        // 避免除零错误：如果时间间隔小于1毫秒，返回0.0
+        // Avoid division by zero: if time interval is less than 1ms, return 0.0
         if elapsed_ms < 1 {
             return 0.0;
         }
@@ -201,12 +212,12 @@ impl Stats {
         (current_count - last_count) as f64 / elapsed
     }
 
-    /// 打印最终统计结果
+    /// Print final statistics results
     ///
-    /// # 参数
-    /// - `stats`: 统计数据结构
-    /// - `duration`: 测试持续时间
-    /// - `show_output`: 是否显示输出
+    /// # Arguments
+    /// - `stats`: Statistics data structure
+    /// - `duration`: Test duration
+    /// - `show_output`: Whether to display output
     pub fn print_final_stats(stats: &Stats, duration: Duration, show_output: bool) {
         if !show_output {
             return;
@@ -234,6 +245,11 @@ impl Stats {
         } else {
             0.0
         };
+        let bandwidth = if duration.as_secs_f64() > 0.0 {
+            total_bytes as f64 / duration.as_secs_f64() / 1_000_000.0
+        } else {
+            0.0
+        };
 
         println!("\n=== Final Results ===");
         println!("Duration:          {:.2}s", duration.as_secs_f64());
@@ -248,7 +264,7 @@ impl Stats {
         );
         println!(
             "Bandwidth:         {:.2} MB/s",
-            total_bytes as f64 / duration.as_secs_f64() / 1_000_000.0
+            bandwidth
         );
         println!(
             "Traffic:           {:.2}↓, {:.2}↑ Mbps",
