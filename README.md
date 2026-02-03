@@ -31,7 +31,7 @@ tcpkali2 -c 1000 127.0.0.1:9527
 Basic Websocket echo test.
 
 ```bash
-tcpkali2 -c 1000 --ws ws://127.0.0.1:8000
+tcpkali2 -c 1000 --ws 127.0.0.1:8000
 ```
 
 ```
@@ -53,6 +53,7 @@ Options:
       --nagle                        Control Nagle algorithm (set TCP_NODELAY)
   -p, --pipeline                     Use pipeline client to send messages
   -T, --duration <T>                 Load test for the specified amount of time [default: 15s]
+      --warmup <T>                   Warmup duration before benchmark (0 to skip) [default: 5s]
   -e, --unescape-message-args        Unescape the following {-m|-f|--first-*} arguments
       --first-message <string>       Send this message first, once
       --first-message-file <name>    Read the first message from a file
